@@ -89,3 +89,16 @@ def test_cli_replay_report(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "walk_on_path: detected" in out and "false events: 0" in out
     assert BSSID in path.read_text()
+
+
+def test_cli_missing_file_is_a_clean_error(capsys):
+    assert cli.main(["replay", "tests/fixtures/walking.csv", "--report"]) == 1
+    err = capsys.readouterr().err
+    assert "file not found: tests/fixtures/walking.csv" in err and "Traceback" not in err
+
+
+def test_cli_bad_csv_is_a_clean_error(tmp_path, capsys):
+    bad = tmp_path / "bad.csv"
+    bad.write_text("a,b\n1,2\n")
+    assert cli.main(["replay", str(bad)]) == 1
+    assert "expected columns" in capsys.readouterr().err

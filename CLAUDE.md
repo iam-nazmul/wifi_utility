@@ -59,6 +59,15 @@ uv run ruff check . && uv run ruff format .
 uv run wifi-utility watch --secs 20            # live link; macOS has no `timeout` command
 uv run wifi-utility record out.csv --secs 60   # needs real WiFi + Location permission
 uv run wifi-utility replay tests/fixtures/walking.csv --report
+
+# ক্যালিব্রেট করুন। কমান্ড দিয়ে ৩ মিনিটের জন্য ঘর থেকে বের হয়ে যান:
+uv run wifi-utility calibrate
+
+uv run wifi-utility run #ব্রাউজারে খুলুন: http://127.0.0.1:8765/live
+
+# Mac আর রাউটারের মাঝখান দিয়ে হাঁটলে ৩ থেকে ১০ সেকেন্ডের মধ্যে ব্যানার লাল হয়ে MOTION DETECTED দেখাবে। থামার প্রায় ১০ সেকেন্ড পরে আবার সবুজ NO MOTION হবে। ওপরের মেনু বারের আইকনও ⚪ থেকে 🔴 হবে।
+
+
 ```
 
 Tests set `WIFI_UTILITY_HOME` to a temp dir (see `tests/conftest.py`); anything that runs the
@@ -81,7 +90,8 @@ CLI against real data writes to `~/Library/Application Support/wifi_utility/`.
 - Inject time (a `clock` callable) into sampler, detector and modes. No `time.time()` calls
   inside logic, so state machines and notice periods are testable.
 - Baselines are keyed by BSSID + channel. A link change forces recalibration; never reuse or
-  blend baselines across links.
+  blend baselines across links. When macOS hides the BSSID, the source uses
+  `00:00:00:00:00:00` (SPEC §4.1), so only channel changes are caught.
 - Baseline drift updates only while `idle`, never during `motion`.
 - All on-screen motion display (menu bar, `/live` page, `watch`) reads one shared 1 Hz stream
   from `display/stream.py`; don't let display code read the detector or source directly.

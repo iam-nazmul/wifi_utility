@@ -26,7 +26,9 @@ if a fan or heater is usually on, calibrate with it on. It is not a certified al
 - [uv](https://docs.astral.sh/uv/)
 - **Location Services permission** for the app you run it from (Terminal, iTerm, VS Code…).
   macOS hides the router's address (BSSID) without it, and the utility needs it to keep a separate
-  calibration per router. Grant it in System Settings → Privacy & Security → Location Services.
+  calibration per router. Run `uv run wifi-utility permission` **in Terminal or iTerm** and click
+  Allow (editor terminals may not show the prompt), or enable the app in System Settings →
+  Privacy & Security → Location Services. `record` works without it, using a placeholder address.
 
 ## Install
 

@@ -81,6 +81,13 @@ ESP-IDF CSI capture, streaming over UDP to the Mac. Plugs into the same pipeline
 - If the BSSID or channel changes (roaming, router reboot), emit a `link_changed` event and
   force recalibration. Never mix baselines across links.
 - `ReplaySource` reads a recorded CSV, used for tests and tuning.
+- macOS often withholds the BSSID from command-line tools even when the launching app (e.g.
+  VS Code) has Location permission. All live commands then continue with BSSID
+  `00:00:00:00:00:00` and print a note: baselines are effectively keyed by channel alone, so
+  roaming between access points on the same channel isn't detected (fine with one router;
+  recalibrate on mesh networks after false alarms). Channel changes still force recalibration.
+- `wifi-utility permission` asks macOS for Location access via CoreLocation, so the launching
+  app (Terminal, iTerm…) appears in System Settings. Some editors' terminals never show the prompt.
 
 ### 4.2 Sampler
 - Polls the source at a configurable rate (default 5 Hz).
@@ -177,7 +184,8 @@ wifi-utility arm | disarm               # home mode
 wifi-utility policy publish <file.md>   # workplace mode
 wifi-utility policy confirm-notice [--yes]   # §6.1 gate 3
 wifi-utility policy status
-wifi-utility record <out.csv> --secs N  # raw samples for tuning
+wifi-utility permission                 # ask macOS for Location access (BSSID)
+wifi-utility record <out.csv> --secs N  # raw samples for tuning; works without BSSID
 wifi-utility replay <in.csv> [--report] [--calibrate-from empty.csv] [--calibrate-secs N]
                                         # --report scores against <in>.labels.csv
 wifi-utility export --since YYYY-MM-DD [--out file.csv]

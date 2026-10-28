@@ -10,6 +10,7 @@ dependencies = [
     "fastapi>=0.110",
     "uvicorn[standard]>=0.29",
     "pyobjc-framework-CoreWLAN>=10.0; sys_platform == 'darwin'",
+    "pyobjc-framework-CoreLocation>=10.0; sys_platform == 'darwin'",
     "rumps>=0.4; sys_platform == 'darwin'",
 ]
 

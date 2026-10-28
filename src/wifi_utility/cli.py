@@ -40,10 +40,24 @@ def fail(msg: str, code: int = 1) -> int:
     return code
 
 
+HIDDEN_BSSID_NOTE = (
+    "note: macOS is hiding the router address (no Location permission for this process), so the\n"
+    "      calibration is kept per WiFi channel. That's fine with one router; on a mesh network,\n"
+    "      recalibrate if you see false alarms after the Mac switches access point."
+)
+
+
 def live_source():
     from .sources.corewlan import CoreWLANSource
 
-    return CoreWLANSource()
+    # macOS often withholds the BSSID from command-line tools even when the launching app has
+    # Location permission, so continue with a placeholder and key baselines by channel.
+    return CoreWLANSource(allow_missing_bssid=True)
+
+
+def warn_if_hidden(source) -> None:
+    if getattr(source, "bssid_hidden", False):
+        print(HIDDEN_BSSID_NOTE, file=sys.stderr)
 
 
 def open_store(cfg: Config) -> Store:
@@ -72,8 +86,10 @@ def cmd_calibrate(args, cfg: Config) -> int:
         print(f"\r  {elapsed:5.0f}/{secs:g}s", end="", flush=True)
 
     try:
-        samples = collect_live(live_source(), secs, cfg.sample_hz, on_progress=progress)
+        source = live_source()
+        samples = collect_live(source, secs, cfg.sample_hz, on_progress=progress)
         print()
+        warn_if_hidden(source)
         baseline = calibrate_samples(samples, cfg, secs)
     except (SourceError, CalibrationError) as e:
         print()
@@ -111,6 +127,7 @@ def cmd_run(args, cfg: Config) -> int:
         source.stop()
     except SourceError as e:
         return fail(str(e))
+    warn_if_hidden(source)
 
     engine = Engine(cfg, source, store=store, stream=stream, mode=mode)
     stop = threading.Event()
@@ -173,7 +190,14 @@ def cmd_watch(args, cfg: Config) -> int:
     store = open_store(cfg)
     stream = LiveStream("home")
     stream.subscribe(TerminalView())
-    engine = Engine(cfg, live_source(), store=store, stream=stream)
+    source = live_source()
+    try:
+        source.start()
+        source.stop()
+    except SourceError as e:
+        return fail(str(e))
+    warn_if_hidden(source)
+    engine = Engine(cfg, source, store=store, stream=stream)
     stop = threading.Event()
     if args.secs:
         threading.Timer(args.secs, stop.set).start()
@@ -268,7 +292,9 @@ def cmd_record(args, cfg: Config) -> int:
         print(f"\r  {elapsed:5.0f}/{args.secs:g}s  RSSI {rssi}   ", end="", flush=True)
 
     try:
-        samples = collect_live(live_source(), args.secs, cfg.sample_hz, on_progress=progress)
+        # Recording works without the BSSID: fixtures get a placeholder before commit anyway.
+        source = live_source()
+        samples = collect_live(source, args.secs, cfg.sample_hz, on_progress=progress)
     except SourceError as e:
         print()
         return fail(str(e))
@@ -278,7 +304,44 @@ def cmd_record(args, cfg: Config) -> int:
     print(f"Wrote {n} samples.")
     if len(links) > 1:
         print("warning: the router link changed during recording; don't use this file for tuning")
-    print("Replace the real BSSID with a placeholder before committing it as a fixture.")
+    if source.bssid_hidden:
+        print(
+            "note: macOS hid the router address (no Location permission), so the file uses "
+            "00:00:00:00:00:00 and can't detect roaming between access points. Channel changes "
+            "are still recorded. Run `wifi-utility permission` in Terminal to fix this."
+        )
+    else:
+        print("Replace the real BSSID with a placeholder before committing it as a fixture.")
+    return 0
+
+
+def cmd_permission(args, cfg: Config) -> int:
+    from .sources.location import location_status, request_location_access
+
+    try:
+        before = location_status()
+    except ImportError:
+        return fail("CoreLocation is unavailable; run `uv sync` on macOS")
+    print(f"Location Services status: {before}")
+    if before == "not determined":
+        print("Asking macOS… click Allow in the prompt (waiting up to 60 s).")
+        after = request_location_access(timeout=60)
+        print(f"Status now: {after}")
+        if after == "not determined":
+            print(
+                "No prompt appeared. Run this command from Terminal or iTerm (some editors can't "
+                "show it), or enable the app in System Settings → Privacy & Security → "
+                "Location Services."
+            )
+            return 1
+        before = after
+    if before in {"denied", "restricted"}:
+        print(
+            "Enable it in System Settings → Privacy & Security → Location Services for the app "
+            "running this command, then restart that app."
+        )
+        return 1
+    print("Location access granted; the router address (BSSID) is now readable.")
     return 0
 
 
@@ -394,6 +457,9 @@ def build_parser() -> argparse.ArgumentParser:
     psub.add_parser("status", help="show policy versions and collection status")
     s.set_defaults(fn=cmd_policy)
 
+    s = sub.add_parser("permission", help="ask macOS for Location access (needed for BSSID)")
+    s.set_defaults(fn=cmd_permission)
+
     s = sub.add_parser("record", help="record raw samples to CSV")
     s.add_argument("out")
     s.add_argument("--secs", type=float, required=True)
@@ -429,7 +495,15 @@ def main(argv: list[str] | None = None) -> int:
         cfg = load(args.config, getattr(args, "mode", None))
     except ConfigError as e:
         return fail(f"config: {e}")
-    return args.fn(args, cfg)
+    try:
+        return args.fn(args, cfg)
+    except FileNotFoundError as e:
+        hint = ""
+        if "fixtures" in str(e.filename):
+            hint = " (fixtures are real recordings; see tests/fixtures/README.md to record one)"
+        return fail(f"file not found: {e.filename}{hint}")
+    except SourceError as e:  # e.g. a CSV with the wrong columns
+        return fail(str(e))
 
 
 if __name__ == "__main__":
