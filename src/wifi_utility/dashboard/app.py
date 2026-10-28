@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import csv
+import dataclasses
 import io
 import secrets
 import time
@@ -36,6 +37,8 @@ class DashboardContext:
     store: Store
     stream: LiveStream
     clock: Callable[[], float] = time.time
+    # Set by `run`: switches the running app's mode; raises on refusal (e.g. policy gates).
+    switch_mode: Callable[[str], str] | None = None
 
     @property
     def workplace(self) -> bool:
@@ -87,7 +90,10 @@ def create_app(ctx: DashboardContext) -> FastAPI:
     @app.get("/api/status", dependencies=[Depends(admin)])
     def status():
         _, latest = ctx.stream.latest()
-        out = {"mode": ctx.cfg.mode, "latest": latest}
+        out = {"mode": ctx.cfg.mode, "latest": latest, "can_switch": ctx.switch_mode is not None}
+        # Whether workplace mode could start now, so the UI can explain before anyone clicks.
+        wp_cfg = dataclasses.replace(ctx.cfg, mode="workplace")
+        out["workplace_status"] = wp.collection_status(ctx.store, wp_cfg, ctx.clock()).reason
         if ctx.workplace:
             st = wp.collection_status(ctx.store, ctx.cfg, ctx.clock())
             out["collection"] = {
@@ -97,7 +103,22 @@ def create_app(ctx: DashboardContext) -> FastAPI:
             }
         else:
             out["notice"] = "Tell other household members and guests that the motion sensor is on."
+            out["alarm"] = home_mode.describe_arm(
+                ctx.store, ctx.clock(), ctx.cfg.home.exit_delay_secs
+            )
         return out
+
+    @app.post("/api/mode", dependencies=[Depends(admin)])
+    async def set_mode(request: Request):
+        if ctx.switch_mode is None:
+            raise HTTPException(501, "mode switching is only available while `run` is running")
+        body = await request.json() if await request.body() else {}
+        mode = str(body.get("mode", ""))
+        try:
+            message = ctx.switch_mode(mode)
+        except Exception as e:  # SwitchError: refused, e.g. workplace policy gates
+            raise HTTPException(409, str(e)) from e
+        return {"mode": ctx.cfg.mode, "message": message}
 
     @app.get("/api/history", dependencies=[Depends(admin)])
     def history():
@@ -117,7 +138,9 @@ def create_app(ctx: DashboardContext) -> FastAPI:
             home_mode.arm(ctx.store, ctx.clock(), "dashboard", quality)
         except home_mode.ArmError as e:
             raise HTTPException(409, str(e)) from e
-        return {"armed_at": ctx.clock(), "exit_delay_secs": ctx.cfg.home.exit_delay_secs}
+        return {
+            "alarm": home_mode.describe_arm(ctx.store, ctx.clock(), ctx.cfg.home.exit_delay_secs)
+        }
 
     @app.post("/api/disarm", dependencies=[Depends(admin)])
     def disarm():

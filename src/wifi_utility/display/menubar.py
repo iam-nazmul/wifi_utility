@@ -30,7 +30,7 @@ def workplace_title(m: dict | None) -> str:
     return "🔵 Occupied" if m["occupied"] else "⚪ Vacant"
 
 
-def home_lines(m: dict | None) -> list[str]:
+def home_lines(m: dict | None, armed_text: str | None = None) -> list[str]:
     if not m:
         return ["Starting…"]
     last = (
@@ -44,7 +44,7 @@ def home_lines(m: dict | None) -> list[str]:
         f"Score: {score}  (trigger {m['trigger']})",
         f"Confidence: {m['confidence'] or '–'}",
         f"Calibration: {m['calibration_quality'] or 'none'}",
-        f"Armed: {'yes' if m['armed'] else 'no'}",
+        f"Alarm: {armed_text or ('on' if m['armed'] else 'off')}",
         f"Last motion: {last}",
     ]
 
@@ -61,49 +61,63 @@ def workplace_lines(m: dict | None) -> list[str]:
 
 
 def run_menubar(
-    stream: LiveStream,
-    live_url: str,
+    get_stream: Callable[[], LiveStream],
+    dashboard_url: str,
     on_quit: Callable[[], None],
     on_arm: Callable[[bool], str] | None = None,
     should_exit: Callable[[], bool] | None = None,
+    armed_text: Callable[[], str] | None = None,
 ) -> None:
+    """`get_stream` returns the current stream, which changes when the mode is switched."""
     import rumps
 
-    workplace = stream.mode == "workplace"
     app = rumps.App("WiFi Motion", title=ICONS["off"], quit_button=None)
-    n_lines = 2 if workplace else 6
+    n_lines = 7
     info = [rumps.MenuItem("") for _ in range(n_lines)]
 
     def open_live(_):
-        webbrowser.open(live_url)
+        webbrowser.open(f"{dashboard_url}/live")
+
+    def open_dashboard(_):
+        webbrowser.open(f"{dashboard_url}/")
 
     def toggle_arm(sender):
         if on_arm is None:
             return
-        _, m = stream.latest()
-        msg = on_arm(not (m and m["armed"]))
+        _, m = get_stream().latest()
+        msg = on_arm(not (m and m.get("armed")))
         rumps.notification("WiFi Motion", "", msg)
 
     def quit_app(_):
         on_quit()
         rumps.quit_application()
 
-    menu: list = [*info, None, rumps.MenuItem("Open live view", callback=open_live)]
-    if not workplace and on_arm is not None:
-        menu.append(rumps.MenuItem("Arm / disarm", callback=toggle_arm))
-    menu += [None, rumps.MenuItem("Quit", callback=quit_app)]
-    app.menu = menu
+    arm_item = rumps.MenuItem("Arm / disarm", callback=toggle_arm if on_arm else None)
+    app.menu = [
+        *info,
+        None,
+        rumps.MenuItem("Open live view", callback=open_live),
+        arm_item,
+        rumps.MenuItem("Change mode…", callback=open_dashboard),
+        None,
+        rumps.MenuItem("Quit", callback=quit_app),
+    ]
 
     def update(_):
         if should_exit and should_exit():
             rumps.quit_application()
             return
+        stream = get_stream()
         _, m = stream.latest()
-        if workplace:
+        if stream.mode == "workplace":
             app.title, lines = workplace_title(m), workplace_lines(m)
+            arm_item.title = "Alarm: home mode only"
         else:
-            app.title, lines = home_title(m), home_lines(m)
-        for item, text in zip(info, lines + [""] * n_lines, strict=False):
+            app.title, lines = home_title(m), home_lines(m, armed_text() if armed_text else None)
+            arm_item.title = "Arm / disarm"
+        label = "Workplace occupancy" if stream.mode == "workplace" else "Home security"
+        mode_line = f"Mode: {label}"
+        for item, text in zip(info, [mode_line, *lines] + [""] * n_lines, strict=False):
             item.title = text
 
     rumps.Timer(update, 1).start()

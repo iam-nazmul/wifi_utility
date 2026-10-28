@@ -139,6 +139,12 @@ Retention is enforced by a daily job and is configurable within the limits in §
   and then only with a password.
 - Views: live view (§4.7b), calibration quality, event list (Home), occupancy
   heatmap (Workplace), policy page (Workplace), audit log.
+- **Mode panel**: switches the running app between Home and Workplace (`POST /api/mode`,
+  `runtime.py`). A switch is a config change: switching to Workplace passes the same §6.1 gates
+  (refused with the reason otherwise, and the current mode keeps running), the new mode is
+  written to `config.toml`, and `mode_changed` + `config_changed` are audited. The UI asks for
+  inline confirmation and states what each mode shows; Home is only for spaces the operator owns.
+  The menu bar and live view follow the switch.
 
 ### 4.7 On-screen motion display
 Motion is shown on screen in three places. All of them read the same detector output stream

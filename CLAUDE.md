@@ -110,6 +110,8 @@ These are product requirements, enforced in code, not config (SPEC §6):
   no live score, RSSI or per-second state; `watch` refuses to run (SPEC §4.7).
 - Every view, export and config change goes to the append-only `audit` table.
 - Policy change → new version, notice period restarts, collection stops until it takes effect.
+- Switching mode at runtime (`runtime.py`, dashboard Mode panel) is a config change: switching to
+  workplace must pass the same gates, and every switch is audited and persisted.
 
 Each invariant needs a test in `tests/test_workplace_gates.py`. If a request would relax one,
 stop and ask rather than implementing it.

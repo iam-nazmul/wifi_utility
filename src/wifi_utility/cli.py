@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import csv
 import getpass
-import hashlib
 import logging
 import signal
 import sys
@@ -65,14 +64,9 @@ def open_store(cfg: Config) -> Store:
 
 
 def audit_config(store: Store, cfg: Config, now: float) -> None:
-    """Record config changes in the audit log (SPEC §6.4)."""
-    text = cfg.source_path.read_bytes() if cfg.source_path else b"<defaults>"
-    digest = hashlib.sha256(text + cfg.mode.encode()).hexdigest()
-    if store.kv_get("config_hash") != digest:
-        store.kv_set("config_hash", digest)
-        store.audit(
-            now, actor(), "config_changed", f"{cfg.source_path or 'defaults'} mode={cfg.mode}"
-        )
+    from .runtime import audit_config as _audit
+
+    _audit(store, cfg, now, actor())
 
 
 # --- commands -------------------------------------------------------------------------------
@@ -108,19 +102,14 @@ def cmd_calibrate(args, cfg: Config) -> int:
 
 
 def cmd_run(args, cfg: Config) -> int:
-    store = open_store(cfg)
-    now = time.time()
-    audit_config(store, cfg, now)
-    stream = LiveStream(cfg.mode)
-    notifier = Notifier(cfg.home.webhook_url, cfg.home.ntfy_url)
-    try:
-        if cfg.mode == "workplace":
-            mode = wp.WorkplaceMode(cfg, store, notifier, now)
-        else:
-            mode = home_mode.HomeMode(cfg, store, notifier)
-    except wp.GateError as e:
-        return fail(f"workplace mode will not start: {e}", 2)
+    from .dashboard.app import DashboardContext, serve
+    from .runtime import Runtime, SwitchError
 
+    runtime = Runtime(cfg, live_source, Notifier(cfg.home.webhook_url, cfg.home.ntfy_url))
+    try:
+        runtime.prepare()  # policy gates first, before touching the WiFi hardware
+    except SwitchError as e:
+        return fail(f"{e} (or start in home mode with --mode home)", 2)
     source = live_source()
     try:
         source.start()
@@ -128,60 +117,71 @@ def cmd_run(args, cfg: Config) -> int:
     except SourceError as e:
         return fail(str(e))
     warn_if_hidden(source)
+    runtime.start()
 
-    engine = Engine(cfg, source, store=store, stream=stream, mode=mode)
-    stop = threading.Event()
+    ctx = DashboardContext(
+        cfg=runtime.cfg,
+        store=runtime.store,
+        stream=runtime.stream,
+        switch_mode=lambda mode: runtime.switch(mode, "dashboard"),
+    )
 
-    def run_engine():
-        try:
-            engine.run(stop)
-        except Exception:
-            log.exception("engine stopped")
-            stop.set()
+    def sync_ctx(rt: Runtime) -> None:
+        ctx.cfg, ctx.store, ctx.stream = rt.cfg, rt.store, rt.stream
 
-    threading.Thread(target=run_engine, name="engine", daemon=True).start()
-    from .dashboard.app import DashboardContext, serve
-
-    ctx = DashboardContext(cfg=cfg, store=store, stream=stream)
+    runtime.on_change.append(sync_ctx)
+    stop = runtime.app_stop
     threading.Thread(target=serve, args=(ctx, stop), name="dashboard", daemon=True).start()
     url = f"http://{cfg.dashboard.bind}:{cfg.dashboard.port}"
-    print(f"Running in {cfg.mode} mode. Dashboard: {url}/  Live view: {url}/live")
-    if cfg.mode == "workplace":
+    print(f"Running in {runtime.mode} mode. Dashboard: {url}/  Live view: {url}/live")
+    print("Change mode from the dashboard (Mode panel).")
+    if runtime.mode == "workplace":
         print(f"Public policy page: {url}/policy")
     else:
         print("Tell other household members and guests that the motion sensor is running.")
 
-    def on_arm(want: bool) -> str:
-        if want:
+    def on_arm(_want: bool) -> str:
+        # Toggle on the saved state, not the screen: during the exit delay the screen still
+        # says "not armed", and re-arming there must not restart the delay.
+        if runtime.mode != "home":
+            return "The alarm is only available in home mode"
+        store, now = runtime.store, time.time()
+        if home_mode.armed_at(store) is None:
             try:
-                home_mode.arm(store, time.time(), "menubar", engine.calibration_quality)
+                home_mode.arm(store, now, "menubar", runtime.engine.calibration_quality)
             except home_mode.ArmError as e:
                 return str(e)
-            return f"Armed; active in {cfg.home.exit_delay_secs:g}s"
-        home_mode.disarm(store, time.time(), "menubar")
+            return "Alarm " + home_mode.describe_arm(store, now, runtime.cfg.home.exit_delay_secs)
+        home_mode.disarm(store, now, "menubar")
         return "Disarmed"
 
+    def arm_text() -> str:
+        return home_mode.describe_arm(runtime.store, time.time(), runtime.cfg.home.exit_delay_secs)
+
     use_menubar = not args.no_menubar and sys.platform == "darwin"
-    if use_menubar:
-        try:
-            from .display.menubar import run_menubar
+    try:
+        if use_menubar:
+            try:
+                from .display.menubar import run_menubar
 
-            run_menubar(
-                stream,
-                f"{url}/live",
-                stop.set,
-                on_arm if cfg.mode == "home" else None,
-                should_exit=stop.is_set,
-            )
-            return 0
-        except ImportError:
-            print("rumps not available; running without the menu bar")
-
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        signal.signal(sig, lambda *_: stop.set())
-    while not stop.wait(0.5):
-        pass
-    return 0
+                run_menubar(
+                    lambda: runtime.stream,
+                    url,
+                    stop.set,
+                    on_arm,
+                    should_exit=stop.is_set,
+                    armed_text=arm_text,
+                )
+                return 0
+            except ImportError:
+                print("rumps not available; running without the menu bar")
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            signal.signal(sig, lambda *_: stop.set())
+        while not stop.wait(0.5):
+            pass
+        return 0
+    finally:
+        runtime.stop()
 
 
 def cmd_watch(args, cfg: Config) -> int:
@@ -226,7 +226,8 @@ def cmd_arm(args, cfg: Config) -> int:
         home_mode.arm(store, time.time(), actor(), baseline.quality if baseline else None)
     except home_mode.ArmError as e:
         return fail(str(e))
-    print(f"Armed. Alerts start after the {cfg.home.exit_delay_secs:g}s exit delay.")
+    now = time.time()
+    print(f"Alarm {home_mode.describe_arm(store, now, cfg.home.exit_delay_secs)}.")
     return 0
 
 

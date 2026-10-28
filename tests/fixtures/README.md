@@ -1,6 +1,6 @@
 # Fixtures
 
-Real recordings for detector tuning (SPEC §9). **None recorded yet.** Unit tests use synthetic
+Real recordings for detector tuning (SPEC §9). Unit tests use synthetic
 data from `tests/synth.py` instead; recordings here are what prove accuracy in a real room.
 
 Record with the `record-fixture` skill or:
@@ -15,3 +15,4 @@ motion, add `<name>.labels.csv` (`start_ts,end_ts,label`).
 
 | File | Date | Room | Mac–router distance | Router | Notes |
 |---|---|---|---|---|---|
+| walking.csv | 2026-10-29 | – | – | – | 5 min, 1,401 samples, ch 161, BSSID hidden by macOS. No `walking.labels.csv` yet, so `--report` can't score it |

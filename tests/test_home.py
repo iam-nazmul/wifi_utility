@@ -102,3 +102,20 @@ def test_dashboard_arm_and_events(cfg, home_store):
     assert client.get("/api/events").json()
     status = client.get("/api/status").json()
     assert "household" in status["notice"]
+
+
+def test_arming_again_keeps_original_time(home_store):
+    assert home.arm(home_store, 1000, "t", "good") == 1000
+    assert home.arm(home_store, 1050, "t", "good") == 1000  # second click: delay not restarted
+    assert home.armed_at(home_store) == 1000
+    assert [a["action"] for a in home_store.audit_log()] == ["armed"]
+
+
+def test_arm_state_shows_exit_delay(home_store):
+    assert home.arm_state(home_store, 0, 60) == ("off", 0)
+    home.arm(home_store, 1000, "t", "good")
+    assert home.arm_state(home_store, 1015, 60) == ("arming", 45)
+    assert home.describe_arm(home_store, 1015, 60) == "arming… active in 45s"
+    assert home.describe_arm(home_store, 1060, 60) == "on"
+    home.disarm(home_store, 1100, "t")
+    assert home.describe_arm(home_store, 1101, 60) == "off"

@@ -177,7 +177,12 @@ function renderHome(m) {
   drawChart($("rssi"), (p) => (p.signal ? p.signal.rssi_dbm : null), { range: [lo, hi] });
 }
 
+let currentMode = null;
+
 function handle(m) {
+  // The mode was switched from the dashboard: reload so the page shows the new mode's layout.
+  if (currentMode && m.mode !== currentMode) return location.reload();
+  currentMode = m.mode;
   if (m.mode === "workplace") return renderWorkplace(m);
   points.push(m);
   const cutoff = m.ts - WINDOW;

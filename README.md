@@ -58,6 +58,13 @@ On screen:
 
 Tell other household members and guests that the sensor is running.
 
+## Switching mode
+
+On the dashboard (http://127.0.0.1:8765/) use the **Mode** panel to switch between Home security
+and Workplace occupancy while the app runs. Switching to Workplace only works once a policy is
+published, effective and its notice confirmed; otherwise the panel shows why. Every switch is
+saved to `config.toml` and written to the audit log. The menu bar's **Change mode…** opens it.
+
 ## Workplace mode
 
 Workplace mode won't start until all of these are true:

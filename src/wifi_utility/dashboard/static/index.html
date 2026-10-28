@@ -25,6 +25,14 @@
   button { font: inherit; padding: 8px 14px; border-radius: 8px; border: 1px solid var(--line);
            background: var(--panel); color: var(--text); cursor: pointer; }
   button.primary { background: var(--accent); color: #fff; border-color: transparent; }
+  button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  .seg button { border: 0; border-radius: 0; padding: 10px 16px; }
+  .seg button + button { border-left: 1px solid var(--line); }
+  .seg button[aria-pressed="true"] { background: var(--accent); color: #fff; cursor: default; }
+  .confirm { border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; margin-top: 12px;
+             display: grid; gap: 10px; }
+  .err { color: var(--bad); }
   table { border-collapse: collapse; width: 100%; font-size: 14px; }
   th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
   th { color: var(--muted); font-weight: 600; }
@@ -44,6 +52,22 @@
     <h1>WiFi Motion — <span id="mode">…</span></h1>
     <div class="row"><a href="/live">Open live view →</a><a href="/policy" id="policyLink" hidden>Public policy page</a></div>
   </header>
+
+  <section class="panel" id="modePanel" hidden>
+    <h2>Mode</h2>
+    <div class="row">
+      <div class="seg" role="group" aria-label="Mode">
+        <button id="modeHome" aria-pressed="false">Home security</button>
+        <button id="modeWork" aria-pressed="false">Workplace occupancy</button>
+      </div>
+      <span id="modeMsg" class="muted"></span>
+    </div>
+    <p class="muted" id="modeHint" style="margin:10px 0 0"></p>
+    <div class="confirm" id="modeConfirm" hidden>
+      <span id="modeConfirmText"></span>
+      <div class="row"><button class="primary" id="modeYes">Switch</button><button id="modeNo">Cancel</button></div>
+    </div>
+  </section>
 
   <section class="panel notice" id="notice" hidden></section>
 
@@ -105,13 +129,14 @@ function heatmap(el, rows) {
 async function refresh() {
   const s = await getJSON("/api/status");
   $("mode").textContent = s.mode === "home" ? "Home Security" : "Workplace Occupancy";
+  renderMode(s);
   const m = s.latest;
   if (s.mode === "home") {
     $("armRow").hidden = false; $("eventsPanel").hidden = false;
     $("notice").hidden = false; $("notice").textContent = s.notice;
     const q = m ? m.calibration_quality : null;
     $("status").innerHTML = m
-      ? `State <b>${esc(m.state)}</b> · score ${m.score ?? "–"} · armed <b>${m.armed ? "yes" : "no"}</b> · ` +
+      ? `State <b>${esc(m.state)}</b> · score ${m.score ?? "–"} · alarm <b>${esc(s.alarm)}</b> · ` +
         `calibration <span class="pill ${q || "none"}">${q || "none"}</span>` +
         (q === "poor" || !q ? " — recalibrate with the room empty: <code>wifi-utility calibrate</code>" : "")
       : "Engine not running.";
@@ -137,11 +162,58 @@ async function loadSlow() {
 }
 
 $("arm").onclick = async () => {
-  try { const r = await getJSON("/api/arm", { method: "POST" }); $("armMsg").textContent = `Armed; active in ${r.exit_delay_secs}s.`; }
+  try { const r = await getJSON("/api/arm", { method: "POST" }); $("armMsg").textContent = `Alarm ${r.alarm}.`; }
   catch (e) { $("armMsg").textContent = e.message; }
   refresh();
 };
 $("disarm").onclick = async () => { await getJSON("/api/disarm", { method: "POST" }); $("armMsg").textContent = "Disarmed."; refresh(); };
+
+const MODE_TEXT = {
+  home: "Home mode shows live motion, scores and the signal, and sends alarm alerts. Use it only " +
+        "in a space you own, not in a monitored workplace. The change is recorded in the audit log.",
+  workplace: "Workplace mode records only occupied or vacant per 15 minutes, under your published " +
+             "policy. Live motion, scores and alarm alerts stop. The change is recorded in the audit log.",
+};
+let pendingMode = null;
+
+function renderMode(s) {
+  if (!s.can_switch) return;
+  $("modePanel").hidden = false;
+  $("modeHome").setAttribute("aria-pressed", String(s.mode === "home"));
+  $("modeWork").setAttribute("aria-pressed", String(s.mode === "workplace"));
+  $("modeHint").textContent = s.mode === "home"
+    ? `Workplace mode: ${s.workplace_status}.`
+    : "Switching to home mode turns live motion and alerts back on.";
+  $("modeHint").dataset.mode = s.mode;
+}
+
+function askMode(mode) {
+  if ($("modeHint").dataset.mode === mode) return;
+  pendingMode = mode;
+  $("modeMsg").textContent = "";
+  $("modeConfirmText").textContent = MODE_TEXT[mode];
+  $("modeYes").textContent = mode === "home" ? "Switch to home security" : "Switch to workplace occupancy";
+  $("modeConfirm").hidden = false;
+  $("modeYes").focus();
+}
+
+$("modeHome").onclick = () => askMode("home");
+$("modeWork").onclick = () => askMode("workplace");
+$("modeNo").onclick = () => { $("modeConfirm").hidden = true; pendingMode = null; };
+$("modeYes").onclick = async () => {
+  $("modeYes").disabled = true;
+  try {
+    const r = await getJSON("/api/mode", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: pendingMode }) });
+    $("modeMsg").textContent = r.message;
+    location.reload();
+  } catch (e) {
+    $("modeConfirm").hidden = true;
+    $("modeMsg").innerHTML = `<span class="err">Not switched: ${esc(e.message)}</span>`;
+  } finally {
+    $("modeYes").disabled = false;
+  }
+};
 
 refresh(); loadSlow();
 setInterval(refresh, 3000);

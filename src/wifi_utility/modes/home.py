@@ -18,13 +18,19 @@ class ArmError(RuntimeError):
     pass
 
 
-def arm(store: Store, now: float, actor: str, calibration_quality: str | None) -> None:
+def arm(store: Store, now: float, actor: str, calibration_quality: str | None) -> float:
+    """Arm alerts; returns the arm time. Arming again keeps the original time, so repeated
+    clicks during the exit delay don't keep pushing it back."""
     if calibration_quality is None:
         raise ArmError("not calibrated; run `wifi-utility calibrate` with the room empty and still")
     if calibration_quality == "poor":
         raise ArmError("calibration quality is poor; recalibrate before arming")
+    existing = armed_at(store)
+    if existing is not None:
+        return existing
     store.kv_set(ARMED_AT_KEY, repr(now))
     store.audit(now, actor, "armed")
+    return now
 
 
 def disarm(store: Store, now: float, actor: str) -> None:
@@ -35,6 +41,20 @@ def disarm(store: Store, now: float, actor: str) -> None:
 def armed_at(store: Store) -> float | None:
     value = store.kv_get(ARMED_AT_KEY, "")
     return float(value) if value else None
+
+
+def arm_state(store: Store, now: float, exit_delay_secs: float) -> tuple[str, int]:
+    """Manual arm state: ("off", 0), ("arming", seconds left) or ("on", 0)."""
+    at = armed_at(store)
+    if at is None:
+        return "off", 0
+    left = at + exit_delay_secs - now
+    return ("arming", max(1, round(left))) if left > 0 else ("on", 0)
+
+
+def describe_arm(store: Store, now: float, exit_delay_secs: float) -> str:
+    state, left = arm_state(store, now, exit_delay_secs)
+    return {"off": "off", "on": "on"}.get(state, f"arming… active in {left}s")
 
 
 class HomeMode:
