@@ -1,0 +1,31 @@
+# Copy to config.toml (project dir) or ~/Library/Application Support/wifi_utility/config.toml
+mode = "home"                 # "home" | "workplace"
+sample_hz = 5
+window_secs = 5
+
+[detector]
+trigger = 3.5
+trigger_secs = 3
+release = 2.0
+release_secs = 10
+calibration_secs = 180
+drift_alpha = 0.001
+weights = { rssi_std = 1.0, rssi_mad = 1.0, delta_energy = 1.5, tx_rate_changes = 0.5 }
+
+[home]
+exit_delay_secs = 60
+schedule = []                 # e.g. ["mon-fri 09:00-17:00"]
+webhook_url = ""
+ntfy_url = ""                 # e.g. "https://ntfy.sh/<your-topic>"
+debug_capture = false
+
+[workplace]
+zone_id = "meeting-room-1"
+notice_days = 7
+retention_days = 90           # hard max 90
+after_hours_alert = false
+
+[dashboard]
+bind = "127.0.0.1"
+port = 8765
+password = ""                 # required if bind is not a loopback address

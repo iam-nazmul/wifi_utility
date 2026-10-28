@@ -1,6 +1,6 @@
 # WiFi Motion Sensing Utility — Specification
 
-Status: Draft v0.1 · 2026-10-28 · Owner: iam-nazmul
+Status: v0.1 implemented (M1–M5) · 2026-10-29 · Owner: iam-nazmul
 
 ## 1. Summary
 
@@ -93,8 +93,8 @@ ESP-IDF CSI capture, streaming over UDP to the Mac. Plugs into the same pipeline
 ### 4.3 Detector
 - **Calibration**: user starts calibration with the space empty and still. Collect 3 minutes
   (configurable). Store per-feature median and MAD as the baseline for that BSSID+channel.
-- **Score**: weighted sum of robust z-scores of each feature against the baseline, clipped
-  to [0, 10]. Weights live in config.
+- **Score**: weighted mean of one-sided robust z-scores of each feature against the baseline,
+  clipped to [0, 10]. Weights live in config. Exact formulas: `.claude/references/detector-math.md`.
 - **State machine** with hysteresis:
   - `idle → motion` when score ≥ `trigger` (default 3.5) for ≥ `trigger_secs` (default 3).
   - `motion → idle` when score < `release` (default 2.0) for ≥ `release_secs` (default 10).
@@ -102,7 +102,11 @@ ESP-IDF CSI capture, streaming over UDP to the Mac. Plugs into the same pipeline
 - **Calibration quality**: `poor` if baseline RSSI std > 3 dB or too few samples. Poor quality
   shows a warning in the dashboard and blocks arming in Home mode.
 - **Baseline drift**: while `idle` for a long time, slowly update the baseline (EMA, α small)
-  so temperature and furniture changes don't cause false alarms. Never update during `motion`.
+  so temperature and furniture changes don't cause false alarms. Never update during `motion`
+  or while the score is above `release`.
+- **Known limitation**: a sudden lasting change in conditions after calibration (e.g. a fan
+  switched on) can cause repeated false events; drift is too slow to absorb it. Recalibrate in
+  the conditions you run in.
 
 ### 4.4 Storage (SQLite, `~/Library/Application Support/wifi_utility/data.db`)
 | Table | Columns | Notes |
@@ -111,9 +115,10 @@ ESP-IDF CSI capture, streaming over UDP to the Mac. Plugs into the same pipeline
 | `events` | id, mode, start_ts, end_ts, peak_score, confidence | Home mode motion events |
 | `occupancy` | zone_id, bucket_start, occupied (bool) | Workplace mode only; 15-min buckets |
 | `baselines` | bssid, channel, created_ts, stats_json | |
-| `policy` | version, text_hash, published_ts, active | Workplace mode |
+| `policy` | version, text_hash, published_ts, active, effective_ts, text, notice_confirmed_ts | Workplace mode |
 | `acknowledgements` | policy_version, ack_ts, ack_by | See §6.3 |
-| `audit` | ts, actor, action, detail | Append-only |
+| `audit` | ts, actor, action, detail | Append-only (enforced by SQLite triggers) |
+| `kv` | key, value | Small shared state between CLI and running engine (armed time, config hash) |
 
 Retention is enforced by a daily job and is configurable within the limits in §6.
 
@@ -163,16 +168,20 @@ Motion is shown on screen in three places. All of them read the same detector ou
 
 ### 4.8 CLI
 ```
+wifi-utility [--config PATH] [-v] <command>
 wifi-utility calibrate [--secs 180]
-wifi-utility run --mode home|workplace [--no-menubar]
-wifi-utility watch                      # live motion in the terminal (home mode)
+wifi-utility run [--mode home|workplace] [--no-menubar]
+wifi-utility watch [--secs N]           # live motion in the terminal (home mode)
 wifi-utility live                       # open the live view window in the browser
 wifi-utility arm | disarm               # home mode
 wifi-utility policy publish <file.md>   # workplace mode
+wifi-utility policy confirm-notice [--yes]   # §6.1 gate 3
 wifi-utility policy status
 wifi-utility record <out.csv> --secs N  # raw samples for tuning
-wifi-utility replay <in.csv> [--report] # run detector offline; --report scores against <in>.labels.csv
-wifi-utility export --since <date>
+wifi-utility replay <in.csv> [--report] [--calibrate-from empty.csv] [--calibrate-secs N]
+                                        # --report scores against <in>.labels.csv
+wifi-utility export --since YYYY-MM-DD [--out file.csv]
+wifi-utility service install | uninstall    # launchd agent (§8)
 ```
 
 ## 5. Home Security mode
@@ -199,6 +208,10 @@ disclosure rather than leaving it to the operator's memory.
    the monitored zone. Recorded in the audit log.
 
 ### 6.2 Policy template (`policy/TEMPLATE.md`)
+Each field is a `## Heading` section with the exact heading names used in the template, plus
+`## Effective date` (YYYY-MM-DD) and `## Acknowledgement records names` (yes/no). Hours of
+operation use the schedule format (`mon-fri 08:00-18:00`). Sections still containing a
+`<placeholder>`, TODO or TBD are rejected.
 Required fields:
 - Employer name and contact for questions
 - Zones monitored and where the sensor is
@@ -255,6 +268,7 @@ weights = { rssi_std = 1.0, rssi_mad = 1.0, delta_energy = 1.5, tx_rate_changes 
 exit_delay_secs = 60
 schedule = []                 # e.g. ["mon-fri 09:00-17:00"]
 webhook_url = ""
+ntfy_url = ""                 # e.g. "https://ntfy.sh/<topic>"
 debug_capture = false
 
 [workplace]
@@ -266,13 +280,19 @@ after_hours_alert = false
 [dashboard]
 bind = "127.0.0.1"
 port = 8765
+password = ""                 # required when bind is not a loopback address
 ```
+
+Config is read from `--config`, else `./config.toml`, else
+`~/Library/Application Support/wifi_utility/config.toml`, else defaults. Unknown keys and
+out-of-range values are rejected. `WIFI_UTILITY_HOME` overrides the data directory.
 
 ## 8. Tech stack
 
 - Python 3.12+, `pyobjc-framework-CoreWLAN`, `numpy`
 - SQLite (stdlib `sqlite3`)
-- Dashboard: FastAPI (+ WebSocket) + static HTML pages with a small chart library (uPlot)
+- Dashboard: FastAPI (+ WebSocket) + static HTML pages; charts drawn on plain `<canvas>` so
+  the dashboard needs no CDN or internet access (G4)
 - Menu bar: `rumps`
 - Packaging: `uv` project; a `launchd` plist for running at login
 - macOS 14+ (tested on macOS 26)
@@ -284,18 +304,27 @@ wifi_utility/
   config.example.toml
   policy/TEMPLATE.md
   src/wifi_utility/
+    config.py
     sources/{base.py, corewlan.py, replay.py}
     sampler.py
     detector.py
+    engine.py                # pipeline wiring, calibration, replay
+    evaluate.py              # replay --report metrics
+    schedule.py              # "mon-fri 09:00-17:00" windows
     modes/{home.py, workplace.py}
     store.py
     notifier.py
     display/{stream.py, menubar.py, terminal.py}
-    dashboard/{app.py, static/{index.html, live.html}}
+    dashboard/{app.py, static/{index.html, live.html, policy.html}}
+    service.py               # launchd agent
     cli.py
   tests/
-    fixtures/{empty_room.csv, walking.csv, fan_running.csv}
+    synth.py                 # synthetic signal generator (model data)
+    fixtures/                # real recordings (README lists them)
+    test_sampler.py
     test_detector.py
+    test_home.py
+    test_display.py
     test_workplace_gates.py
 ```
 
@@ -307,6 +336,9 @@ wifi_utility/
   or without the notice confirmation; refuses retention > 90; refuses debug capture.
 - Display: the stream emits one update per second; in workplace mode the stream carries only
   bucket occupancy (no score/RSSI) and `watch` exits with an error.
+
+**Synthetic data** (`tests/synth.py`) exercises the same targets on modelled signals. It checks
+the logic, not real-world accuracy.
 
 **Recorded-data (ReplaySource)**
 - Record at least: empty room (30 min), person walking through the Mac–router path, person
@@ -330,6 +362,10 @@ wifi_utility/
 4. **M4 Workplace mode**: policy publish and gates, occupancy buckets, public policy page, audit log.
 5. **M5 Packaging**: launchd service, config validation, README.
 6. **v2 (later)**: ESP32 CSI `SignalSource`, multi-zone.
+
+M1–M5 are implemented and pass their tests on synthetic data. Still open: real fixture
+recordings and threshold tuning on them (§9), and a live-link run, which needs Location
+Services permission on the machine.
 
 ## 11. Open questions
 

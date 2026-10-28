@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Live Motion</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --text: #1d2330; --muted: #6b7385; --line: #e2e5ec;
+    --idle: #2f9e5b; --rising: #d98a1c; --motion: #d64545; --off: #8a91a0; --chart: #3b6fd8;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12151b; --panel: #1b2029; --text: #e7eaf0; --muted: #98a0b3; --line: #2b3240;
+      --idle: #47c27a; --rising: #f0a43a; --motion: #ff6262; --off: #707888; --chart: #6f9cff;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  main { max-width: 1000px; margin: 0 auto; padding: 16px; }
+  .banner { border-radius: 14px; padding: 28px 20px; text-align: center; color: #fff;
+            background: var(--off); transition: background .3s; }
+  .banner h1 { margin: 0; font-size: clamp(28px, 7vw, 56px); letter-spacing: .02em; }
+  .banner p { margin: 6px 0 0; opacity: .9; }
+  .banner.idle { background: var(--idle); } .banner.rising { background: var(--rising); }
+  .banner.motion { background: var(--motion); }
+  .banner.flash { animation: flash .5s 6 alternate; }
+  @keyframes flash { to { filter: brightness(1.6); } }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+           padding: 12px 14px; margin-top: 14px; }
+  .panel h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted);
+              margin: 0 0 8px; font-weight: 600; }
+  canvas { width: 100%; height: 180px; display: block; }
+  .strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; }
+  .strip div span { display: block; color: var(--muted); font-size: 12px; }
+  .strip div b { font-size: 18px; font-variant-numeric: tabular-nums; }
+  .hint { color: var(--muted); font-size: 12px; margin-top: 10px; }
+  .conn { float: right; font-size: 12px; color: var(--muted); }
+  body.fullscreen main { max-width: none; }
+  body.fullscreen .banner { padding: 12vh 20px; }
+</style>
+</head>
+<body>
+<main>
+  <div class="banner" id="banner"><h1 id="state">CONNECTING…</h1><p id="sub">&nbsp;</p></div>
+
+  <section class="panel" id="scorePanel">
+    <h2>Motion score — last 2 minutes <span class="conn" id="conn"></span></h2>
+    <canvas id="score"></canvas>
+  </section>
+  <section class="panel" id="rssiPanel">
+    <h2>Signal strength (RSSI, dBm)</h2>
+    <canvas id="rssi"></canvas>
+  </section>
+  <section class="panel" id="stripPanel">
+    <div class="strip">
+      <div><span>RSSI</span><b id="sRssi">–</b></div>
+      <div><span>Noise</span><b id="sNoise">–</b></div>
+      <div><span>Tx rate</span><b id="sRate">–</b></div>
+      <div><span>Channel</span><b id="sChan">–</b></div>
+      <div><span>Link quality (SNR)</span><b id="sSnr">–</b></div>
+      <div><span>Armed</span><b id="sArmed">–</b></div>
+    </div>
+  </section>
+  <p class="hint">Detects motion between this Mac and the router — not still people, identity, count
+    or location. Press <b>F</b> for full screen.</p>
+</main>
+<script>
+const WINDOW = 120;
+let points = [];          // home messages
+let lastState = null;
+
+const $ = (id) => document.getElementById(id);
+const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
+function fmtAgo(ts) {
+  if (!ts) return "";
+  const s = Math.max(0, Math.round(Date.now() / 1000 - ts));
+  return s < 60 ? `${s}s ago` : s < 3600 ? `${Math.round(s / 60)} min ago` : `${Math.round(s / 3600)} h ago`;
+}
+
+function drawChart(canvas, series, opts) {
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  canvas.width = w * dpr; canvas.height = h * dpr;
+  const ctx = canvas.getContext("2d");
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, w, h);
+  const now = points.length ? points[points.length - 1].ts : Date.now() / 1000;
+  const x = (ts) => w - ((now - ts) / WINDOW) * w;
+  const [lo, hi] = opts.range;
+  const y = (v) => h - 6 - ((v - lo) / (hi - lo)) * (h - 12);
+
+  // motion bands
+  ctx.fillStyle = css("--motion") + "33";
+  for (const p of points) if (p.state === "motion") ctx.fillRect(x(p.ts) - w / WINDOW, 0, w / WINDOW + 1, h);
+
+  // threshold lines
+  for (const [v, color, label] of opts.lines || []) {
+    ctx.strokeStyle = color; ctx.setLineDash([5, 4]); ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(0, y(v)); ctx.lineTo(w, y(v)); ctx.stroke();
+    ctx.setLineDash([]); ctx.fillStyle = color; ctx.font = "11px sans-serif";
+    ctx.fillText(label, 4, y(v) - 3);
+  }
+
+  ctx.strokeStyle = css("--chart"); ctx.lineWidth = 2; ctx.beginPath();
+  let started = false;
+  for (const p of points) {
+    const v = series(p);
+    if (v === null || v === undefined) { started = false; continue; }
+    const px = x(p.ts), py = y(Math.max(lo, Math.min(hi, v)));
+    if (!started) { ctx.moveTo(px, py); started = true; } else ctx.lineTo(px, py);
+  }
+  ctx.stroke();
+}
+
+function beep() {
+  try {
+    const ac = new (window.AudioContext || window.webkitAudioContext)();
+    const o = ac.createOscillator(); const g = ac.createGain();
+    o.frequency.value = 880; o.connect(g); g.connect(ac.destination);
+    g.gain.setValueAtTime(0.2, ac.currentTime); g.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + 0.6);
+    o.start(); o.stop(ac.currentTime + 0.6);
+  } catch (e) { /* audio blocked until user interaction */ }
+}
+
+function renderWorkplace(m) {
+  for (const id of ["scorePanel", "rssiPanel", "stripPanel"]) $(id).style.display = "none";
+  const b = $("banner");
+  if (!m.collection_active) {
+    b.className = "banner"; $("state").textContent = "NOT COLLECTING";
+    $("sub").textContent = "No active policy, or it hasn't taken effect yet";
+    return;
+  }
+  b.className = "banner " + (m.occupied ? "motion" : "idle");
+  $("state").textContent = m.occupied ? "OCCUPIED" : "VACANT";
+  const t = new Date(m.bucket_start * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  $("sub").textContent = `${m.zone_id} · 15-minute period from ${t} · Collection active under policy v${m.policy_version}`;
+}
+
+function renderHome(m) {
+  const b = $("banner");
+  const rising = m.state === "idle" && m.score !== null && m.score >= m.release;
+  const labels = {
+    motion: "MOTION DETECTED", idle: "NO MOTION", uncalibrated: "NOT CALIBRATED",
+    warming_up: "WARMING UP", no_signal: "NO WIFI SIGNAL",
+  };
+  b.className = "banner " + (m.state === "motion" ? "motion" : rising ? "rising" : m.state === "idle" ? "idle" : "");
+  $("state").textContent = labels[m.state] || m.state.toUpperCase();
+  const parts = [];
+  if (m.confidence) parts.push(`confidence ${m.confidence}`);
+  parts.push(`calibration ${m.calibration_quality || "none"}`);
+  if (m.last_event_ts) parts.push(`last motion ${fmtAgo(m.last_event_ts)}`);
+  $("sub").textContent = parts.join(" · ");
+
+  if (lastState && lastState !== "motion" && m.state === "motion" && m.armed) {
+    b.classList.add("flash"); beep();
+    setTimeout(() => b.classList.remove("flash"), 3000);
+  }
+  lastState = m.state;
+
+  const s = m.signal;
+  $("sRssi").textContent = s ? `${s.rssi_dbm} dBm` : "–";
+  $("sNoise").textContent = s ? `${s.noise_dbm} dBm` : "–";
+  $("sRate").textContent = s ? `${s.tx_rate_mbps} Mbps` : "–";
+  $("sChan").textContent = s ? s.channel : "–";
+  $("sSnr").textContent = s ? `${s.rssi_dbm - s.noise_dbm} dB` : "–";
+  $("sArmed").textContent = m.armed ? "yes" : "no";
+
+  drawChart($("score"), (p) => p.score, {
+    range: [0, 10],
+    lines: [[m.trigger, css("--motion"), `trigger ${m.trigger}`], [m.release, css("--rising"), `release ${m.release}`]],
+  });
+  const rssis = points.filter((p) => p.signal).map((p) => p.signal.rssi_dbm);
+  const lo = rssis.length ? Math.min(...rssis) - 3 : -90, hi = rssis.length ? Math.max(...rssis) + 3 : -30;
+  drawChart($("rssi"), (p) => (p.signal ? p.signal.rssi_dbm : null), { range: [lo, hi] });
+}
+
+function handle(m) {
+  if (m.mode === "workplace") return renderWorkplace(m);
+  points.push(m);
+  const cutoff = m.ts - WINDOW;
+  points = points.filter((p) => p.ts >= cutoff);
+  renderHome(m);
+}
+
+function connect() {
+  const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/live`);
+  ws.onopen = () => { $("conn").textContent = "live"; };
+  ws.onmessage = (e) => {
+    const data = JSON.parse(e.data);
+    if (data.history) { points = []; data.history.forEach(handle); } else handle(data);
+  };
+  ws.onclose = () => { $("conn").textContent = "reconnecting…"; setTimeout(connect, 2000); };
+}
+
+document.addEventListener("keydown", (e) => {
+  if (e.key === "f" || e.key === "F") {
+    document.body.classList.toggle("fullscreen");
+    if (!document.fullscreenElement) document.documentElement.requestFullscreen?.(); else document.exitFullscreen?.();
+  }
+});
+window.addEventListener("resize", () => points.length && renderHome(points[points.length - 1]));
+connect();
+</script>
+</body>
+</html>

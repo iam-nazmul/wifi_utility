@@ -1,0 +1,23 @@
+.env
+venv/
+.venv/
+env/
+*.local.json
+
+# Python / tooling
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+dist/
+build/
+
+# Local config and data (may contain your router's BSSID or a dashboard password)
+config.toml
+*.db
+*.db-wal
+*.db-shm
+*.csv
+!tests/fixtures/*.csv
+
+.DS_Store

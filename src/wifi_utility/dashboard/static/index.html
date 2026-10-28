@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WiFi Motion Dashboard</title>
+<style>
+  :root { --bg: #f6f7f9; --panel: #fff; --text: #1d2330; --muted: #6b7385; --line: #e2e5ec;
+          --accent: #3b6fd8; --ok: #2f9e5b; --warn: #d98a1c; --bad: #d64545; --cell0: #e7eaf0; --cell1: #3b6fd8; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #12151b; --panel: #1b2029; --text: #e7eaf0; --muted: #98a0b3; --line: #2b3240;
+            --accent: #6f9cff; --ok: #47c27a; --warn: #f0a43a; --bad: #ff6262; --cell0: #262c38; --cell1: #6f9cff; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  main { max-width: 1000px; margin: 0 auto; padding: 16px; }
+  header { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; }
+  h1 { font-size: 22px; margin: 0; }
+  a { color: var(--accent); }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px; margin-top: 14px; overflow-x: auto; }
+  .panel h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 10px; }
+  .notice { border-left: 4px solid var(--warn); }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+  button { font: inherit; padding: 8px 14px; border-radius: 8px; border: 1px solid var(--line);
+           background: var(--panel); color: var(--text); cursor: pointer; }
+  button.primary { background: var(--accent); color: #fff; border-color: transparent; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th { color: var(--muted); font-weight: 600; }
+  .pill { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; color: #fff; }
+  .good { background: var(--ok); } .fair { background: var(--warn); } .poor, .none { background: var(--bad); }
+  .heat { display: grid; grid-template-columns: 70px repeat(96, minmax(4px, 1fr)); gap: 1px; min-width: 480px; }
+  .heat div { height: 14px; background: var(--cell0); border-radius: 2px; }
+  .heat div.on { background: var(--cell1); }
+  .heat .lbl { background: none; font-size: 11px; color: var(--muted); height: auto; }
+  .muted { color: var(--muted); }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>WiFi Motion — <span id="mode">…</span></h1>
+    <div class="row"><a href="/live">Open live view →</a><a href="/policy" id="policyLink" hidden>Public policy page</a></div>
+  </header>
+
+  <section class="panel notice" id="notice" hidden></section>
+
+  <section class="panel">
+    <h2>Status</h2>
+    <div id="status" class="muted">Loading…</div>
+    <div class="row" id="armRow" hidden style="margin-top:10px">
+      <button class="primary" id="arm">Arm</button><button id="disarm">Disarm</button>
+      <span id="armMsg" class="muted"></span>
+    </div>
+  </section>
+
+  <section class="panel" id="eventsPanel" hidden>
+    <h2>Motion events (7 days)</h2>
+    <table><thead><tr><th>Start</th><th>End</th><th>Peak score</th><th>Confidence</th></tr></thead>
+      <tbody id="events"></tbody></table>
+  </section>
+
+  <section class="panel" id="occPanel" hidden>
+    <h2>Zone occupancy (7 days, 15-minute periods) <a href="/api/export.csv" style="float:right">Export CSV</a></h2>
+    <div class="heat" id="heat"></div>
+    <p class="muted">Aggregate occupancy only. This system cannot identify, count or track people.</p>
+  </section>
+
+  <section class="panel">
+    <h2>Audit log</h2>
+    <table><thead><tr><th>Time</th><th>Actor</th><th>Action</th><th>Detail</th></tr></thead>
+      <tbody id="audit"></tbody></table>
+  </section>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const t = (ts) => (ts ? new Date(ts * 1000).toLocaleString() : "–");
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+
+async function getJSON(url, opts) {
+  const r = await fetch(url, opts);
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(body.detail || r.statusText);
+  return body;
+}
+
+function heatmap(el, rows) {
+  const byKey = new Map(rows.map((r) => [r.bucket_start, r.occupied]));
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  let html = "";
+  for (let d = 6; d >= 0; d--) {
+    const day = new Date(today.getTime() - d * 86400000);
+    html += `<div class="lbl">${day.toLocaleDateString([], { weekday: "short", day: "numeric" })}</div>`;
+    for (let i = 0; i < 96; i++) {
+      const ts = day.getTime() / 1000 + i * 900;
+      const v = byKey.get(ts);
+      html += `<div class="${v ? "on" : ""}" title="${new Date(ts * 1000).toLocaleString()}: ${v === undefined ? "no data" : v ? "occupied" : "vacant"}"></div>`;
+    }
+  }
+  el.innerHTML = html;
+}
+
+async function refresh() {
+  const s = await getJSON("/api/status");
+  $("mode").textContent = s.mode === "home" ? "Home Security" : "Workplace Occupancy";
+  const m = s.latest;
+  if (s.mode === "home") {
+    $("armRow").hidden = false; $("eventsPanel").hidden = false;
+    $("notice").hidden = false; $("notice").textContent = s.notice;
+    const q = m ? m.calibration_quality : null;
+    $("status").innerHTML = m
+      ? `State <b>${esc(m.state)}</b> · score ${m.score ?? "–"} · armed <b>${m.armed ? "yes" : "no"}</b> · ` +
+        `calibration <span class="pill ${q || "none"}">${q || "none"}</span>` +
+        (q === "poor" || !q ? " — recalibrate with the room empty: <code>wifi-utility calibrate</code>" : "")
+      : "Engine not running.";
+    const ev = await getJSON("/api/events");
+    $("events").innerHTML = ev.map((e) =>
+      `<tr><td>${t(e.start_ts)}</td><td>${e.end_ts ? t(e.end_ts) : "ongoing"}</td><td>${(e.peak_score ?? 0).toFixed(1)}</td><td>${esc(e.confidence)}</td></tr>`
+    ).join("") || `<tr><td colspan="4" class="muted">No motion events.</td></tr>`;
+  } else {
+    $("occPanel").hidden = false; $("policyLink").hidden = false;
+    const c = s.collection;
+    $("status").innerHTML = `<b>${c.active ? "Collection active" : "Not collecting"}</b> — ${esc(c.reason)}` +
+      (m ? ` · current period: <b>${m.occupied ? "Occupied" : "Vacant"}</b>` : "");
+  }
+}
+
+async function loadSlow() {
+  const s = await getJSON("/api/status");
+  if (s.mode === "workplace") heatmap($("heat"), await getJSON("/api/occupancy?days=7"));
+  const a = await getJSON("/api/audit");
+  $("audit").innerHTML = a.slice(0, 100).map((r) =>
+    `<tr><td>${t(r.ts)}</td><td>${esc(r.actor)}</td><td>${esc(r.action)}</td><td>${esc(r.detail)}</td></tr>`
+  ).join("") || `<tr><td colspan="4" class="muted">Empty.</td></tr>`;
+}
+
+$("arm").onclick = async () => {
+  try { const r = await getJSON("/api/arm", { method: "POST" }); $("armMsg").textContent = `Armed; active in ${r.exit_delay_secs}s.`; }
+  catch (e) { $("armMsg").textContent = e.message; }
+  refresh();
+};
+$("disarm").onclick = async () => { await getJSON("/api/disarm", { method: "POST" }); $("armMsg").textContent = "Disarmed."; refresh(); };
+
+refresh(); loadSlow();
+setInterval(refresh, 3000);
+</script>
+</body>
+</html>
