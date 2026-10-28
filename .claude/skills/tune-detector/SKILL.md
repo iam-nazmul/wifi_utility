@@ -6,6 +6,8 @@ description: Evaluate and tune motion detector thresholds and feature weights ag
 # Tune the detector
 
 Measure first, then change one thing at a time. Everything here runs offline on fixtures.
+Formulas: `.claude/references/detector-math.md`. Why limits exist:
+`.claude/references/rssi-sensing-background.md`.
 
 ## 1. Baseline measurement
 

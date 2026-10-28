@@ -32,6 +32,7 @@ Focus on anything reachable when `mode = "workplace"`.
 | 10 | Public policy page shows active status, policy version, 7-day aggregate | public page |
 | 11 | Nothing identifies, counts or tracks individuals | whole diff, incl. UI text |
 
+The only allowed workplace stream/export shapes are in `.claude/references/data-formats.md`.
 Also check indirect leaks: log lines at INFO/DEBUG that print scores or RSSI in workplace mode,
 WebSocket payloads with extra fields, API responses that include more than the UI shows.
 

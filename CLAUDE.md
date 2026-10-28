@@ -8,8 +8,18 @@ intentionally diverges.
 
 ## Status
 
-Greenfield. Build in milestone order (SPEC §10): M1 sensing → M2 detector → M3 home →
-M4 workplace → M5 packaging. Don't start a milestone before the previous one has tests passing.
+M1–M5 implemented; all tests pass on synthetic data (`tests/synth.py`). Not yet done: real
+fixture recordings + tuning (SPEC §9), and a live-link run (needs Location Services permission
+for the terminal/editor). One known limitation is pinned as a strict `xfail` in
+`tests/test_detector.py` (noise jump after calibration) — don't delete it to make CI green.
+
+## References (`.claude/references/`)
+
+Read the relevant one before working in that area (index in `.claude/references/README.md`):
+`corewlan.md` (WiFi API, permissions), `detector-math.md` (exact feature/score/state formulas),
+`data-formats.md` (CSV, labels, stream/WebSocket, webhook, export schemas),
+`rssi-sensing-background.md` (why the detector works, its limits),
+`workplace-monitoring-law.md` (questions the policy template must cover; not legal advice).
 
 ## Project skills (`.claude/skills/`)
 
@@ -20,6 +30,25 @@ M4 workplace → M5 packaging. Don't start a milestone before the previous one h
 - `workplace-guard` — check changes against the workplace-mode invariants. Run it before
   finishing any change that touches workplace mode, storage, display or export.
 
+## Project subagents (`.claude/agents/`)
+
+- `workplace-privacy-reviewer` — read-only, independent check of workplace invariants; verdict OK/Blocked.
+- `detector-tuner` — offline tuning on fixtures against SPEC §9.
+- `macos-integrator` — CoreWLAN, Location permission, menu bar, notifications, launchd.
+- `spec-auditor` — read-only code ↔ SPEC ↔ docs consistency and milestone status.
+
+## Hooks (`.claude/hooks/`, registered in `.claude/settings.json`)
+
+- `guard_bash.py` blocks `sudo`, packet capture, scanning, `airport`/`wdutil`, turning WiFi off,
+  `--no-verify`, commits with Claude attribution or a non-iam-nazmul email, and commits of
+  fixtures containing real BSSIDs.
+- `guard_files.py` blocks edits to `.env*`, `*.db`/`*.sqlite*`, `.git/`, and real BSSIDs in
+  `tests/fixtures/*.csv`.
+- `after_edit.py` runs `ruff format` + `ruff check --fix` on edited Python (once `pyproject.toml`
+  exists) and reminds you to run `workplace-guard` after touching workplace-reachable files.
+
+If a hook blocks something legitimate, fix the hook rather than working around it.
+
 ## Commands
 
 ```bash
@@ -27,9 +56,13 @@ uv sync                                  # install deps
 uv run pytest                            # all tests
 uv run pytest tests/test_detector.py -k hysteresis
 uv run ruff check . && uv run ruff format .
+uv run wifi-utility watch --secs 20            # live link; macOS has no `timeout` command
 uv run wifi-utility record out.csv --secs 60   # needs real WiFi + Location permission
-uv run wifi-utility replay tests/fixtures/walking.csv
+uv run wifi-utility replay tests/fixtures/walking.csv --report
 ```
+
+Tests set `WIFI_UTILITY_HOME` to a temp dir (see `tests/conftest.py`); anything that runs the
+CLI against real data writes to `~/Library/Application Support/wifi_utility/`.
 
 ## Stack and layout
 
@@ -87,6 +120,5 @@ detection.
 
 ## Git
 
-- Author: `iam-nazmul <nazmul.cse48@gmail.com>`. Not yet a git repo — `git init` before first commit
-  when asked.
+- Author: `iam-nazmul <nazmul.cse48@gmail.com>`. Commit only when asked.
 - No `Co-Authored-By: Claude` trailers or "Generated with Claude Code" lines.

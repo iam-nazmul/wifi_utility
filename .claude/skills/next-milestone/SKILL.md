@@ -27,6 +27,7 @@ description: Work out which SPEC §10 milestone is next and implement it end to 
 
 - Follow CLAUDE.md architecture rules (injected clock, no CoreWLAN below the mode layer in
   tests, baselines keyed by BSSID+channel, one display stream).
+- Use `.claude/references/` for formulas, schemas and API notes (see its README).
 - Write tests alongside code. Use `ReplaySource` with fixtures; if a needed fixture is missing,
   generate a small synthetic CSV for unit tests and suggest `record-fixture` for real data.
 - Check current library APIs (pyobjc CoreWLAN, FastAPI WebSockets, rumps, uPlot) with Context7

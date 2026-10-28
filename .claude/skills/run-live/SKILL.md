@@ -16,6 +16,7 @@ networksetup -getairportpower en0      # must say On
 uv run wifi-utility --help             # confirms the CLI is installed
 ```
 
+- Raw link probe and troubleshooting: `.claude/references/corewlan.md`.
 - If the BSSID/SSID comes back empty, the process lacks Location Services permission (macOS 14+).
   Tell the user to grant it in System Settings → Privacy & Security → Location Services for the
   terminal/app running Python. Don't try to work around it.
@@ -32,7 +33,7 @@ uv run wifi-utility --help             # confirms the CLI is installed
 | No live WiFi available | `uv run wifi-utility replay tests/fixtures/walking.csv` | M1 |
 
 Run long-lived commands in the background and stop them when done. `watch` runs until
-interrupted, so limit it: `timeout 30 uv run wifi-utility watch`.
+interrupted, so limit it: `uv run wifi-utility watch --secs 30` (macOS has no `timeout`).
 
 ## 3. Calibrate if needed
 

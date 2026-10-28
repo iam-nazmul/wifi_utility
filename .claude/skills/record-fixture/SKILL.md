@@ -6,7 +6,8 @@ description: Record a labelled WiFi signal fixture (CSV) from the live router li
 # Record a test fixture
 
 Fixtures are raw samples recorded with `wifi-utility record` and replayed with `ReplaySource`
-(SPEC §4.1, §9). Tests depend only on these files, never on live WiFi.
+(SPEC §4.1, §9). Tests depend only on these files, never on live WiFi. CSV and labels schema:
+`.claude/references/data-formats.md`.
 
 ## Scenarios (SPEC §9)
 
