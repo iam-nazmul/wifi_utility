@@ -1,5 +1,6 @@
 # Copy to config.toml (project dir) or ~/Library/Application Support/wifi_utility/config.toml
-mode = "home"                 # "home" | "workplace"
+# mode = "home"                 # "home" | "workplace"
+mode = "workplace"                 # "home" | "workplace"
 sample_hz = 5
 window_secs = 5
 
